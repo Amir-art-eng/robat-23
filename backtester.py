@@ -190,6 +190,25 @@ if __name__ == "__main__":
             print(f"Model Directory: {config.MODEL_DIR}")
         print(f"LSTM Model Path: {config.LSTM_MODEL_PATH}")
         print(f"LSTM Scaler Path: {config.LSTM_SCALER_PATH}")
+        # Print ATR Stop specific config from config file
+        print(f"Use ATR Stop for SL: {getattr(config, 'SG_USE_ATR_STOP', False)}")
+        if getattr(config, 'SG_USE_ATR_STOP', False):
+            print(f"  ATR Period: {getattr(config, 'SG_ATR_PERIOD', 14)}")
+            print(f"  ATR Multiplier: {getattr(config, 'SG_ATR_MULTIPLIER', 2.0)}")
+
+        # New features config printout for Pivots and DT/DB
+        print(f"Use Pivot Filter for Rule-Based Signals: {getattr(config, 'SG_USE_PIVOT_FILTER', False)}")
+        if getattr(config, 'SG_USE_PIVOT_FILTER', False):
+            print(f"  Pivot Proximity Pct: {getattr(config, 'SG_PIVOT_PROXIMITY_PCT', 0.005)}")
+            print(f"  Pivot Levels to Consider: {getattr(config, 'SG_CONSIDER_PIVOT_LEVELS', ['PP', 'S1', 'R1'])}")
+
+        print(f"Use Double Top/Bottom Pattern Signals: {getattr(config, 'SG_USE_DOUBLE_TOP_BOTTOM_SIGNALS', False)}")
+        if getattr(config, 'SG_USE_DOUBLE_TOP_BOTTOM_SIGNALS', False):
+            # These MS_DTB parameters are used in pre_process_data_for_signals but are relevant to the DT/DB strategy
+            print(f"  DT/DB Lookback Swings (MS_DTB_LOOKBACK_SWINGS): {getattr(config, 'MS_DTB_LOOKBACK_SWINGS', 3)}")
+            print(f"  DT/DB Price Similarity Pct (MS_DTB_SIMILARITY_PCT): {getattr(config, 'MS_DTB_SIMILARITY_PCT', 0.03)}")
+            print(f"  DT/DB Confirmation Ratio (MS_DTB_CONFIRMATION_RATIO): {getattr(config, 'MS_DTB_CONFIRMATION_RATIO', 0.3)}")
+            print(f"  DT/DB Specific Reward Ratio (if ATR not used): {getattr(config, 'SG_DBL_TOP_BOTTOM_REWARD_RATIO', config.SG_REWARD_RATIO)}") # Defaults to general R:R
         print("---------------------------------")
 
         # --- Test with Manually Crafted Data First ---
@@ -240,13 +259,11 @@ if __name__ == "__main__":
 
         if ohlcv_data_live is not None and not ohlcv_data_live.empty:
             print("\nPre-processing live data for signals...")
-            enriched_live_df = pre_process_data_for_signals( # This function is from signal_generator.py
+            # Updated call to pass config_module, assuming pre_process_data_for_signals
+            # now sources its parameters from the config_module internally.
+            enriched_live_df = pre_process_data_for_signals(
                 ohlcv_data_live,
-                swing_window=config.EX_PREPROC_SWING_WINDOW,
-                breakout_lookback=config.EX_PREPROC_BREAKOUT_LOOKBACK,
-                pullback_trend_lookback=config.EX_PREPROC_PULLBACK_LOOKBACK,
-                sr_min_touches=config.EX_PREPROC_SR_MIN_TOUCHES,
-                sr_tolerance=config.EX_PREPROC_SR_TOLERANCE
+                config_module=config
             )
             print(f"Enriched live DataFrame shape: {enriched_live_df.shape}")
 
