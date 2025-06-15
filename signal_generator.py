@@ -14,10 +14,15 @@ except ImportError:
 
 # --- Import functions from other project modules ---
 try:
-    from candlestick_patterns import add_candlestick_patterns
+    from candlestick_patterns import (
+        add_candlestick_patterns,
+        is_best_bull_signal_bar, # New
+        is_best_bear_signal_bar  # New
+    )
     CANDLESTICK_PATTERNS_AVAILABLE = True
 except ImportError:
-    print("Error: candlestick_patterns.py not found. Candlestick features will be skipped if generating features here.")
+    print("Error: candlestick_patterns.py or new functions (is_best_bull/bear_signal_bar) not found. "
+          "Candlestick features or best signal bar filter will be skipped.")
     CANDLESTICK_PATTERNS_AVAILABLE = False
 
 try:
@@ -268,8 +273,22 @@ def generate_initial_signals(
                 final_signal_priority = 2
                 # print(f"Debug: Double Bottom confirmed at {index}, signal: {final_signal}")
 
-        # --- 2. Marubozu/Rule-based Signals (Lower Priority) ---
-        if final_signal_priority < 2: # Only if DT/DB didn't fire
+        # --- 1.5. 2-Bar Reversal Signals (Priority between DT/DB and Marubozu/Rules) ---
+        use_2bar_rev_signals = getattr(config, 'SG_USE_2BAR_REVERSAL_SIGNALS', False)
+        if use_2bar_rev_signals and final_signal_priority < 1.5: # Check if higher prio (DT/DB) already fired
+            two_bar_signal_value = row.get('two_bar_reversal', 0) # From pre_process_data_for_signals
+            if two_bar_signal_value == 1:
+                final_signal = 1
+                final_signal_priority = 1.5
+                # print(f"Debug: Bullish 2-Bar Reversal at {index}, signal: {final_signal}")
+            elif two_bar_signal_value == -1:
+                final_signal = -1
+                final_signal_priority = 1.5
+                # print(f"Debug: Bearish 2-Bar Reversal at {index}, signal: {final_signal}")
+
+        # --- 2. Marubozu/Rule-based Signals (Lowest Base Priority before filters) ---
+        # Original rule-based logic now acts as priority 1 if nothing higher has fired
+        if final_signal_priority < 1: # Only if DT/DB (prio 2) or 2-Bar (prio 1.5) didn't fire
             potential_rule_signal = 0
             rule_based_buy_signal = False
             rule_based_sell_signal = False
@@ -333,8 +352,34 @@ def generate_initial_signals(
                 final_signal = potential_rule_signal
                 final_signal_priority = 1
 
-        # --- 3. LSTM Filter (Apply if signal is from rules (prio 1), not DT/DB (prio 2)) ---
-        if final_signal_priority == 1 and actual_use_lstm_filter and model and scaler:
+        # --- Best Signal Bar Filter (Applied after primary rule/pattern signal, before LSTM) ---
+        use_best_sg_filter = getattr(config, 'SG_USE_BEST_SIGNAL_BAR_FILTER', False)
+        if use_best_sg_filter and final_signal != 0 and CANDLESTICK_PATTERNS_AVAILABLE and \
+           'is_best_bull_signal_bar' in globals() and 'is_best_bear_signal_bar' in globals():
+
+            current_iloc = -1
+            try:
+                current_iloc = primary_df.index.get_loc(index)
+            except KeyError:
+                print(f"Warning: Could not get iloc for index {index} in primary_df. Skipping best signal bar filter for this bar.")
+
+            if current_iloc != -1:
+                is_good_signal_bar = False
+                if final_signal == 1:
+                    is_good_signal_bar = is_best_bull_signal_bar(primary_df, current_iloc, config)
+                elif final_signal == -1:
+                    is_good_signal_bar = is_best_bear_signal_bar(primary_df, current_iloc, config)
+
+                if not is_good_signal_bar:
+                    # print(f"Debug: Bar {index} failed Best Signal Bar criteria. Original signal: {final_signal}, Priority: {final_signal_priority}")
+                    final_signal = 0 # Reset signal
+                    # final_signal_priority remains, as it was a valid pattern, just not a "best" bar for entry.
+                    # Or, we could reset priority too if LSTM should not run on failed best bars:
+                    # final_signal_priority = 0
+
+        # --- LSTM Filter (Applies only to signals from Marubozu/Rules that passed other filters, i.e., prio 1) ---
+        if final_signal_priority == 1 and final_signal != 0 and actual_use_lstm_filter and model and scaler:
+            # Note: DT/DB (prio 2) and 2-Bar Reversals (prio 1.5) currently bypass this LSTM filter.
             lstm_prediction_value_this_bar = np.nan
             lstm_prediction_made_this_bar = False
             sequence_start_iloc = current_bar_iloc - lstm_sequence_length + 1
@@ -380,8 +425,12 @@ def generate_initial_signals(
 
             # Determine reward ratio: specific for DT/DB if defined, else general
             current_reward_ratio = reward_ratio # General reward ratio
-            if final_signal_priority == 2 and hasattr(config, 'SG_DBL_TOP_BOTTOM_REWARD_RATIO'):
+            if final_signal_priority == 2 and hasattr(config, 'SG_DBL_TOP_BOTTOM_REWARD_RATIO'): # DT/DB
                  current_reward_ratio = getattr(config, 'SG_DBL_TOP_BOTTOM_REWARD_RATIO', reward_ratio)
+            elif final_signal_priority == 1.5: # 2-Bar Reversal - could have its own R:R if needed
+                # For now, let 2-bar reversals use the general reward_ratio or a specific one if added to config
+                current_reward_ratio = getattr(config, 'SG_2BAR_REVERSAL_REWARD_RATIO', reward_ratio)
+            # else, it's a rule-based signal (prio 1) which uses the general 'reward_ratio'
 
             if use_atr_stop and 'atr' in row and pd.notna(row['atr']) and row['atr'] > 0:
                 current_atr = row['atr']
@@ -459,6 +508,22 @@ if __name__ == "__main__":
             print(f"  DT/DB Lookback Swings (MS_DTB_LOOKBACK_SWINGS): {getattr(config, 'MS_DTB_LOOKBACK_SWINGS', 3)}")
             print(f"  DT/DB Price Similarity Pct (MS_DTB_SIMILARITY_PCT): {getattr(config, 'MS_DTB_SIMILARITY_PCT', 0.03)}")
             print(f"  DT/DB Confirmation Ratio (MS_DTB_CONFIRMATION_RATIO): {getattr(config, 'MS_DTB_CONFIRMATION_RATIO', 0.3)}")
+
+        print(f"Use Best Signal Bar Filter: {getattr(config, 'SG_USE_BEST_SIGNAL_BAR_FILTER', False)}")
+        if getattr(config, 'SG_USE_BEST_SIGNAL_BAR_FILTER', False):
+            print(f"  Best Bull Bar Lower Wick Min/Max Ratio: {getattr(config, 'CP_BEST_SIG_LOWER_WICK_MIN_RATIO_BULL', 0.25)} / {getattr(config, 'CP_BEST_SIG_LOWER_WICK_MAX_RATIO_BULL', 0.60)}")
+            print(f"  Best Bull Bar Upper Wick Max Ratio: {getattr(config, 'CP_BEST_SIG_UPPER_WICK_MAX_SIZE_RATIO_BULL', 0.10)}")
+            print(f"  Best Bear Bar Upper Wick Min/Max Ratio: {getattr(config, 'CP_BEST_SIG_UPPER_WICK_MIN_RATIO_BEAR', 0.25)} / {getattr(config, 'CP_BEST_SIG_UPPER_WICK_MAX_RATIO_BEAR', 0.60)}")
+            print(f"  Best Bear Bar Lower Wick Max Ratio: {getattr(config, 'CP_BEST_SIG_LOWER_WICK_MAX_SIZE_RATIO_BEAR', 0.10)}")
+            print(f"  Best Signal Bar Max Body Overlap with Prev Bar: {getattr(config, 'CP_BEST_SIG_MAX_BODY_OVERLAP_PREV_BAR_RATIO', 0.5)}")
+            print(f"  Best Signal Bar Close N-Bar Extreme: {getattr(config, 'CP_BEST_SIG_CLOSE_EXTREME_N_BARS', 3)}")
+
+        print(f"Use 2-Bar Reversal Signals: {getattr(config, 'SG_USE_2BAR_REVERSAL_SIGNALS', False)}")
+        if getattr(config, 'SG_USE_2BAR_REVERSAL_SIGNALS', False):
+            print(f"  2-Bar Reversal Lookback Period (CP_2BAR_LOOKBACK_PERIOD): {getattr(config, 'CP_2BAR_LOOKBACK_PERIOD', 5)}")
+            print(f"  2-Bar Body Similarity Pct (CP_2BAR_BODY_SIMILARITY_PCT): {getattr(config, 'CP_2BAR_BODY_SIMILARITY_PCT', 0.25)}")
+            print(f"  2-Bar Second Bar Close Extreme Pct (CP_2BAR_SECOND_BAR_CLOSE_EXTREME_PCT): {getattr(config, 'CP_2BAR_SECOND_BAR_CLOSE_EXTREME_PCT', 0.80)}")
+            print(f"  2-Bar Reversal Reward Ratio (SG_2BAR_REVERSAL_REWARD_RATIO): {getattr(config, 'SG_2BAR_REVERSAL_REWARD_RATIO', config.SG_REWARD_RATIO)}")
         print("---------------------------------")
 
         ohlcv_data_main = fetch_price_data(
@@ -522,7 +587,8 @@ if __name__ == "__main__":
                         'lstm_prediction', 'stop_loss', 'take_profit',
                         'is_marubozu', 'is_pullback_bar',
                         'is_bullish_breakout', 'is_bearish_breakout',
-                        'is_double_top_confirmed', 'is_double_bottom_confirmed' # Added DT/DB columns
+                        'is_double_top_confirmed', 'is_double_bottom_confirmed',
+                        'two_bar_reversal' # Added 2-bar reversal column
                     ]
                     if 'is_marubozu' not in output_df.columns and 'is_bullish_marubozu' in output_df.columns:
                          output_df['is_marubozu'] = output_df['is_bullish_marubozu'] | output_df['is_bearish_marubozu']
@@ -542,6 +608,8 @@ if __name__ == "__main__":
                                          'is_double_top_confirmed', 'is_double_bottom_confirmed']: # Added DT/DB
                             if bool_col in output_df.columns:
                                 cols_for_no_signal_view.append(bool_col)
+                        if 'two_bar_reversal' in output_df.columns: # Add 2-bar reversal if present
+                            cols_for_no_signal_view.append('two_bar_reversal')
 
                         final_cols_to_view = [col for col in cols_for_no_signal_view if col in output_df.columns]
                         print(output_df[final_cols_to_view].tail(15).to_string())

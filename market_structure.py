@@ -501,66 +501,102 @@ def identify_gaps(data_df: pd.DataFrame, min_gap_percentage: float = 0.001) -> p
     data_df['gap_size_pct'] = df['gap_size_pct']
     return data_df
 
-def identify_strong_trend(data_df: pd.DataFrame, min_consecutive_swings: int = 3) -> pd.DataFrame:
-    df = data_df.copy()
-    if not all(col in df.columns for col in ['is_swing_high', 'is_swing_low', 'High', 'Low']):
-        print("Error: Required swing columns or OHLC not found. Run find_swing_highs_lows first.")
-        df['strong_trend_status'] = 'None'
-        return df
+def identify_strong_trend(data_df: pd.DataFrame,
+                                  pressure_window: int = 10,
+                                  min_consecutive_bar_strength: int = 3,
+                                  dominance_ratio_threshold: float = 0.6, # e.g. 60% of bars in one direction
+                                  body_ratio_threshold: float = 0.6, # e.g. body is 60% of H-L range for a "strong bar"
+                                  close_extreme_pct_threshold: float = 0.75 # Closes in top/bottom 25% (1-0.75)
+                                 ) -> pd.DataFrame:
+    """
+    Identifies strong trend segments based on user's "buying/selling pressure" criteria,
+    analyzing a rolling window of bars.
+    Adds a 'strong_trend_status' column: 'Strong Uptrend', 'Strong Downtrend', or 'None'.
+    """
+    df = data_df.copy() # Work on a copy
+    if not all(col in df.columns for col in ['Open', 'High', 'Low', 'Close']):
+        print("Error: DataFrame must contain OHLC columns for identify_strong_trend.")
+        # Ensure column exists even if we return early
+        if 'strong_trend_status' not in data_df.columns:
+            data_df['strong_trend_status'] = 'None'
+        return data_df
 
-    df['strong_trend_status'] = 'None'
+    # Initialize the column in the original DataFrame structure that will be returned
+    data_df['strong_trend_status'] = 'None'
 
-    sh_points_df = df[df['is_swing_high']].copy() # Keep as DataFrame to access .index
-    sl_points_df = df[df['is_swing_low']].copy()
+    # Calculate bar properties on the copy
+    df['is_bull_bar'] = df['Close'] > df['Open']
+    df['is_bear_bar'] = df['Close'] < df['Open']
+    df['body_size'] = np.abs(df['Close'] - df['Open'])
+    df['hl_range'] = df['High'] - df['Low']
+    # Replace 0 hl_range with NaN to prevent division by zero, then fill resulting NaNs if any
+    df['hl_range_no_zero'] = df['hl_range'].replace(0, np.nan)
 
-    if len(sh_points_df) < min_consecutive_swings or len(sl_points_df) < min_consecutive_swings:
-        return df
+    df['body_hl_ratio'] = (df['body_size'] / df['hl_range_no_zero']).fillna(0)
+    df['close_loc_norm'] = ((df['Close'] - df['Low']) / df['hl_range_no_zero']).fillna(0.5)
 
-    # Strong Uptrend: N consecutive Higher Lows and N consecutive Higher Highs
-    # This simplified version looks for such sequences independently and marks the SL sequence period.
-    for i in range(len(sl_points_df) - (min_consecutive_swings - 1)):
-        is_hl_sequence = True
-        for k in range(min_consecutive_swings - 1):
-            if not (sl_points_df['Low'].iloc[i+k+1] > sl_points_df['Low'].iloc[i+k]):
-                is_hl_sequence = False; break
-        if not is_hl_sequence: continue
 
-        # Check for HH sequence (anywhere for this simplified version, ideally should be aligned)
-        is_hh_sequence_found = False
-        for j in range(len(sh_points_df) - (min_consecutive_swings - 1)):
-            is_sh_hh = True
-            for k_sh in range(min_consecutive_swings - 1):
-                if not (sh_points_df['High'].iloc[j+k_sh+1] > sh_points_df['High'].iloc[j+k_sh]):
-                    is_sh_hh = False; break
-            if is_sh_hh: is_hh_sequence_found = True; break
+    # Iterate to apply rolling window logic
+    # Start from index where a full window is available
+    for i in range(pressure_window - 1, len(df)):
+        window_slice = df.iloc[i - pressure_window + 1 : i + 1]
 
-        if is_hh_sequence_found:
-            idx_start_mark = sl_points_df.index[i]
-            idx_end_mark = sl_points_df.index[i + min_consecutive_swings - 1]
-            df.loc[idx_start_mark:idx_end_mark, 'strong_trend_status'] = 'Strong Uptrend'
+        num_bull_bars = window_slice['is_bull_bar'].sum()
+        num_bear_bars = window_slice['is_bear_bar'].sum()
 
-    # Strong Downtrend: N consecutive Lower Highs and N consecutive Lower Lows
-    for i in range(len(sh_points_df) - (min_consecutive_swings - 1)):
-        is_lh_sequence = True
-        for k in range(min_consecutive_swings - 1):
-            if not (sh_points_df['High'].iloc[i+k+1] < sh_points_df['High'].iloc[i+k]):
-                is_lh_sequence = False; break
-        if not is_lh_sequence: continue
+        consecutive_bull = 0
+        temp_cb = 0
+        for k_bull in range(len(window_slice)): # Check within the window
+            if window_slice['is_bull_bar'].iloc[k_bull]:
+                temp_cb += 1
+            else:
+                consecutive_bull = max(consecutive_bull, temp_cb)
+                temp_cb = 0
+        consecutive_bull = max(consecutive_bull, temp_cb) # Final check
 
-        is_ll_sequence_found = False
-        for j in range(len(sl_points_df) - (min_consecutive_swings - 1)):
-            is_sl_ll = True
-            for k_sl in range(min_consecutive_swings - 1):
-                if not (sl_points_df['Low'].iloc[j+k_sl+1] < sl_points_df['Low'].iloc[j+k_sl]):
-                    is_sl_ll = False; break
-            if is_sl_ll: is_ll_sequence_found = True; break
+        consecutive_bear = 0
+        temp_cbear = 0
+        for k_bear in range(len(window_slice)):
+            if window_slice['is_bear_bar'].iloc[k_bear]:
+                temp_cbear += 1
+            else:
+                consecutive_bear = max(consecutive_bear, temp_cbear)
+                temp_cbear = 0
+        consecutive_bear = max(consecutive_bear, temp_cbear)
 
-        if is_ll_sequence_found:
-            idx_start_mark = sh_points_df.index[i]
-            idx_end_mark = sh_points_df.index[i + min_consecutive_swings - 1]
-            df.loc[idx_start_mark:idx_end_mark, 'strong_trend_status'] = 'Strong Downtrend'
+        strong_bull_bar_count = window_slice[
+            (window_slice['is_bull_bar']) & \
+            (window_slice['body_hl_ratio'] >= body_ratio_threshold) & \
+            (window_slice['close_loc_norm'] >= close_extreme_pct_threshold)
+        ].shape[0]
 
-    data_df['strong_trend_status'] = df['strong_trend_status']
+        strong_bear_bar_count = window_slice[
+            (window_slice['is_bear_bar']) & \
+            (window_slice['body_hl_ratio'] >= body_ratio_threshold) & \
+            (window_slice['close_loc_norm'] <= (1 - close_extreme_pct_threshold))
+        ].shape[0]
+
+        is_strong_uptrend = False
+        if num_bull_bars / pressure_window >= dominance_ratio_threshold and \
+           (consecutive_bull >= min_consecutive_bar_strength or \
+            strong_bull_bar_count / pressure_window >= (dominance_ratio_threshold * 0.4)): # Relaxed a bit
+            is_strong_uptrend = True
+
+        is_strong_downtrend = False
+        if num_bear_bars / pressure_window >= dominance_ratio_threshold and \
+           (consecutive_bear >= min_consecutive_bar_strength or \
+            strong_bear_bar_count / pressure_window >= (dominance_ratio_threshold * 0.4)):
+            is_strong_downtrend = True
+
+        # Get the original index label for the current bar (end of window)
+        current_bar_original_index = df.index[i]
+
+        if is_strong_uptrend and not is_strong_downtrend:
+            data_df.loc[current_bar_original_index, 'strong_trend_status'] = 'Strong Uptrend'
+        elif is_strong_downtrend and not is_strong_uptrend:
+            data_df.loc[current_bar_original_index, 'strong_trend_status'] = 'Strong Downtrend'
+        # else, it remains 'None' as initialized in data_df
+
     return data_df
 
 def find_double_tops_bottoms(data_df: pd.DataFrame,
@@ -984,27 +1020,63 @@ if __name__ == "__main__":
     else:
         print(f"Data not available for {gap_test_symbol} to test gap identification.")
 
-    # --- Strong Trend Identification Example ---
-    print("\n--- Strong Trend Identification Example ---")
-    # Re-use data_for_gap_test_breakouts as it has swings and is daily data
-    data_for_strong_trend = data_for_gap_test_breakouts
-    if data_for_strong_trend is not None and not data_for_strong_trend.empty:
-        # Ensure 'is_swing_high' and 'is_swing_low' are present from previous step
-        if not all(col in data_for_strong_trend.columns for col in ['is_swing_high', 'is_swing_low']):
-            print("Re-calculating swings for strong trend analysis as they are missing.")
-            sw_window_strong_trend = 10
-            if config_available: sw_window_strong_trend = getattr(config, 'MS_SWING_WINDOW', sw_window_strong_trend)
-            data_for_strong_trend = find_swing_highs_lows(data_for_strong_trend.copy(), window=sw_window_strong_trend)
+    # --- Strong Trend Identification Example (Pressure Based) ---
+    print("\n--- Strong Trend Identification Example (Pressure Based) ---")
+    # Attempt to import config for parameters, with fallbacks
+    try:
+        import config # Re-import or ensure it's available if main example already imported it
+        trend_test_symbol_cfg = getattr(config, 'SYMBOL', 'BTC-USD') # Example, use a relevant symbol
+        trend_test_interval_cfg = getattr(config, 'PRIMARY_INTERVAL_BACKTEST', '1h')
+        trend_test_period_cfg = getattr(config, 'PRIMARY_PERIOD_BACKTEST', '90d')
 
-        strong_trend_df = identify_strong_trend(data_for_strong_trend.copy(), min_consecutive_swings=3)
-        print(f"Strong Trend Status for {gap_test_symbol} (min 3 consecutive swings):")
-        strong_trend_segments = strong_trend_df[strong_trend_df['strong_trend_status'] != 'None']
-        if not strong_trend_segments.empty:
-            print(strong_trend_segments[['Close', 'strong_trend_status']].tail(15).to_string())
-        else:
-            print("  No strong trend segments identified with current settings.")
+        pressure_win_cfg = getattr(config, 'MS_PRESSURE_WINDOW', 10)
+        min_consecutive_cfg = getattr(config, 'MS_MIN_CONSECUTIVE_STRENGTH', 3)
+        dominance_ratio_cfg = getattr(config, 'MS_DOMINANCE_RATIO', 0.6)
+        body_ratio_cfg = getattr(config, 'MS_BODY_RATIO_STRONG_BAR', 0.6)
+        close_extreme_pct_cfg = getattr(config, 'MS_CLOSE_EXTREME_PCT', 0.75)
+    except ImportError:
+        print("config.py not found for strong trend example. Using default parameters.")
+        trend_test_symbol_cfg = 'BTC-USD'
+        trend_test_interval_cfg = '1h'
+        trend_test_period_cfg = '90d'
+        pressure_win_cfg = 10
+        min_consecutive_cfg = 3
+        dominance_ratio_cfg = 0.6
+        body_ratio_cfg = 0.6
+        close_extreme_pct_cfg = 0.75
+
+    data_for_pressure_trend = None
+    if DATA_FETCHER_AVAILABLE:
+        data_for_pressure_trend = fetch_price_data(symbol=trend_test_symbol_cfg,
+                                                 interval=trend_test_interval_cfg,
+                                                 period=trend_test_period_cfg)
     else:
-        print(f"Data not available for {gap_test_symbol} to test strong trend identification.")
+        print(f"Data fetcher not available, cannot fetch data for {trend_test_symbol_cfg} for pressure trend test.")
+
+
+    if data_for_pressure_trend is not None and not data_for_pressure_trend.empty:
+        # The function identify_strong_trend modifies the DataFrame in place by adding a column.
+        # It returns the same DataFrame that was passed, now with the 'strong_trend_status' column.
+        strong_trend_df_pressure = identify_strong_trend(
+            data_for_pressure_trend, # Pass the original df to be modified
+            pressure_window=pressure_win_cfg,
+            min_consecutive_bar_strength=min_consecutive_cfg,
+            dominance_ratio_threshold=dominance_ratio_cfg,
+            body_ratio_threshold=body_ratio_cfg,
+            close_extreme_pct_threshold=close_extreme_pct_cfg
+        )
+
+        print(f"Strong Trend Status for {trend_test_symbol_cfg} (Pressure Based):")
+        # Now strong_trend_df_pressure is the same as data_for_pressure_trend but with the new column
+        strong_segments = strong_trend_df_pressure[strong_trend_df_pressure['strong_trend_status'] != 'None']
+        if not strong_segments.empty:
+            print(strong_segments[['Close', 'strong_trend_status']].tail(20))
+            print(f"Found {len(strong_segments[strong_segments['strong_trend_status'] == 'Strong Uptrend'])} 'Strong Uptrend' bars.")
+            print(f"Found {len(strong_segments[strong_segments['strong_trend_status'] == 'Strong Downtrend'])} 'Strong Downtrend' bars.")
+        else:
+            print("  No strong trend segments identified with current pressure settings.")
+    else:
+        print(f"Data not available for {trend_test_symbol_cfg} to test pressure-based strong trend.")
 
     # --- Double Top/Bottom Example ---
     print("\n--- Double Top/Bottom Example ---")

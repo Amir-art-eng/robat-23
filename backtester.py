@@ -209,6 +209,24 @@ if __name__ == "__main__":
             print(f"  DT/DB Price Similarity Pct (MS_DTB_SIMILARITY_PCT): {getattr(config, 'MS_DTB_SIMILARITY_PCT', 0.03)}")
             print(f"  DT/DB Confirmation Ratio (MS_DTB_CONFIRMATION_RATIO): {getattr(config, 'MS_DTB_CONFIRMATION_RATIO', 0.3)}")
             print(f"  DT/DB Specific Reward Ratio (if ATR not used): {getattr(config, 'SG_DBL_TOP_BOTTOM_REWARD_RATIO', config.SG_REWARD_RATIO)}") # Defaults to general R:R
+
+        print(f"Use Best Signal Bar Filter: {getattr(config, 'SG_USE_BEST_SIGNAL_BAR_FILTER', False)}")
+        if getattr(config, 'SG_USE_BEST_SIGNAL_BAR_FILTER', False):
+            # These CP_BEST_SIG... parameters are used in candlestick_patterns.py but are relevant to the overall strategy settings
+            print(f"  Best Bull Bar Lower Wick Min/Max Ratio: {getattr(config, 'CP_BEST_SIG_LOWER_WICK_MIN_RATIO_BULL', 0.25)} / {getattr(config, 'CP_BEST_SIG_LOWER_WICK_MAX_RATIO_BULL', 0.60)}")
+            print(f"  Best Bull Bar Upper Wick Max Ratio: {getattr(config, 'CP_BEST_SIG_UPPER_WICK_MAX_SIZE_RATIO_BULL', 0.10)}")
+            print(f"  Best Bear Bar Upper Wick Min/Max Ratio: {getattr(config, 'CP_BEST_SIG_UPPER_WICK_MIN_RATIO_BEAR', 0.25)} / {getattr(config, 'CP_BEST_SIG_UPPER_WICK_MAX_RATIO_BEAR', 0.60)}")
+            print(f"  Best Bear Bar Lower Wick Max Ratio: {getattr(config, 'CP_BEST_SIG_LOWER_WICK_MAX_SIZE_RATIO_BEAR', 0.10)}")
+            print(f"  Best Signal Bar Max Body Overlap with Prev Bar: {getattr(config, 'CP_BEST_SIG_MAX_BODY_OVERLAP_PREV_BAR_RATIO', 0.5)}")
+            print(f"  Best Signal Bar Close N-Bar Extreme: {getattr(config, 'CP_BEST_SIG_CLOSE_EXTREME_N_BARS', 3)}")
+
+        print(f"Use 2-Bar Reversal Signals: {getattr(config, 'SG_USE_2BAR_REVERSAL_SIGNALS', False)}")
+        if getattr(config, 'SG_USE_2BAR_REVERSAL_SIGNALS', False):
+            # These CP_2BAR... parameters are used in candlestick_patterns.py but are relevant
+            print(f"  2-Bar Reversal Lookback Period (CP_2BAR_LOOKBACK_PERIOD): {getattr(config, 'CP_2BAR_LOOKBACK_PERIOD', 5)}")
+            print(f"  2-Bar Body Similarity Pct (CP_2BAR_BODY_SIMILARITY_PCT): {getattr(config, 'CP_2BAR_BODY_SIMILARITY_PCT', 0.25)}")
+            print(f"  2-Bar Second Bar Close Extreme Pct (CP_2BAR_SECOND_BAR_CLOSE_EXTREME_PCT): {getattr(config, 'CP_2BAR_SECOND_BAR_CLOSE_EXTREME_PCT', 0.80)}")
+            print(f"  2-Bar Reversal Reward Ratio (SG_2BAR_REVERSAL_REWARD_RATIO): {getattr(config, 'SG_2BAR_REVERSAL_REWARD_RATIO', config.SG_REWARD_RATIO)}") # Defaults to general R:R
         print("---------------------------------")
 
         # --- Test with Manually Crafted Data First ---
